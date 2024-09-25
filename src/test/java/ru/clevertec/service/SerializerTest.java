@@ -19,8 +19,8 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SerializerTest {
-    Serializer serializer = new Serializer();
-    static Customer customer;
+    private final Serializer serializer = new Serializer();
+    private static Customer customer;
 
     @BeforeAll
     public static void init() {

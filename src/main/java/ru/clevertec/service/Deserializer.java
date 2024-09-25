@@ -9,6 +9,7 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -26,6 +27,7 @@ public class Deserializer {
     private <T> T createObjectFromMap(Map<String, Object> map, Class<T> clazz) {
         Constructor<T> constructor = null;
         T t = null;
+        int countNotSetFields = 0;
         try {
             constructor = clazz.getConstructor();
             t = constructor.newInstance();
@@ -38,13 +40,16 @@ public class Deserializer {
             field.setAccessible(true);
             String nameField = field.getName();
             if (map.containsKey(nameField)) {
-                Object value = castToType(map.get(nameField), field.getGenericType().getClass());
+                Object value = castToType(map.get(nameField), field.getType(), field.getGenericType());
                 try {
                     field.set(t, value);
                 } catch (IllegalAccessException e) {
                     throw new JsonParserException(e);
                 }
-            }
+            } else countNotSetFields++;
+        }
+        if (countNotSetFields == fields.length) {
+            throw new JsonParserException();
         }
         return t;
     }
@@ -55,11 +60,11 @@ public class Deserializer {
         }
         if (o instanceof Map) {
             return createObjectFromMap((Map<String, Object>) o, clazz);
-        }
-        throw new JsonParserException();
+        } else
+            throw new JsonParserException();
     }
 
-    private Object castToType(Object value, Class<?> type) {
+    private Object castToType(Object value, Class<?> type, Type genericType) {
         if (value == null) {
             return null;
         }
@@ -67,20 +72,26 @@ public class Deserializer {
             return value.toString();
         } else if (type == Integer.class || type == int.class) {
             return Integer.parseInt(value.toString());
-        } else if (type == UUID.class) {
+        } else if (type.equals(UUID.class)) {
             return UUID.fromString(value.toString());
         } else if (type == Double.class || type == double.class) {
             return Double.parseDouble(value.toString());
         } else if (type == LocalDate.class) {
             return LocalDate.parse(value.toString());
         } else if (type == OffsetDateTime.class) {
-            return OffsetDateTime.parse(value.toString());
+            return formatOffsetDateTime(OffsetDateTime.parse(value.toString()));
         } else if (type == List.class) {
-            return listCastToType((List<?>) value, type);
+            return listCastToType((List<?>) value, genericType);
         } else if (type == Map.class) {
-            return mapCastToType((Map<?, ?>) value, type);
+            return mapCastToType((Map<?, ?>) value, genericType);
         }
         return createObject(value, type);
+    }
+
+    private OffsetDateTime formatOffsetDateTime(OffsetDateTime offsetDateTime) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSSSSSSS'Z'");
+        String offset = offsetDateTime.format(formatter);
+        return OffsetDateTime.parse(offset);
     }
 
     private List<Object> listCastToType(List<?> list, Type type) {
@@ -90,7 +101,7 @@ public class Deserializer {
         }
         List<Object> castedList = new ArrayList<>();
         for (Object o : list) {
-            castedList.add(castToType(o, actualTypeArgument.getClass()));
+            castedList.add(castToType(o, (Class<?>) actualTypeArgument, actualTypeArgument));
         }
         return castedList;
     }
@@ -104,8 +115,8 @@ public class Deserializer {
         }
         Map<Object, Object> castedMap = new HashMap<>();
         for (Map.Entry<?, ?> entry : map.entrySet()) {
-            Object key = castToType(entry.getKey(), actualTypeArgumentKey.getClass());
-            Object value = castToType(entry.getValue(), actualTypeArgumentValue.getClass());
+            Object key = castToType(entry.getKey(), (Class<?>) actualTypeArgumentKey, actualTypeArgumentKey);
+            Object value = castToType(entry.getValue(), (Class<?>) actualTypeArgumentValue, actualTypeArgumentValue);
             castedMap.put(key, value);
         }
         return castedMap;
@@ -113,6 +124,9 @@ public class Deserializer {
 
     private Map<String, Object> getMapFromJson(String json) {
         Map<String, Object> jsonMap = new LinkedHashMap<>();
+        if (json == null) {
+            return null;
+        }
         if (json.startsWith("{")) {
             jsonMap = parseObject(json);
         }
@@ -121,12 +135,12 @@ public class Deserializer {
 
     private Map<String, Object> parseObject(String json) {
         Map<String, Object> map = new LinkedHashMap<>();
-        json = json.substring(1, json.length() - 1).trim();
+        json = json.substring(1, json.length() - 1);
         List<String> fields = splitJsonOnFields(json);
         for (String field : fields) {
             String[] array = field.split(":", 2);
             String key = removeQuotes(array[0]);
-            Object value = parseValue(array[1].trim());
+            Object value = parseValue(array[1]);
             map.put(key, value);
         }
         return map;
@@ -146,7 +160,7 @@ public class Deserializer {
                 } else if (ch == '}' || ch == ']') {
                     nesting--;
                 } else if (ch == ',' && nesting == 0) {
-                    fields.add(builder.toString().trim());
+                    fields.add(builder.toString());
                     builder.delete(0, builder.length());
                     continue;
                 }
@@ -161,10 +175,9 @@ public class Deserializer {
     }
 
     private Object parseValue(String json) {
-        if (json == null) {
+        if (json.equals("null")) {
             return null;
         }
-        json = json.trim();
         if (json.startsWith("{")) {
             return parseObject(json);
         } else if (json.startsWith("[")) {
@@ -176,7 +189,7 @@ public class Deserializer {
 
     private List<Object> parseCollection(String json) {
         List<Object> list = new ArrayList<>();
-        json = json.substring(1, json.length() - 1).trim();
+        json = json.substring(1, json.length() - 1);
         List<String> fields = splitJsonOnFields(json);
         for (String field : fields) {
             list.add(parseValue(field));
@@ -186,10 +199,12 @@ public class Deserializer {
 
     private String removeQuotes(String value) {
         if (value == null) {
-            return value;
-        } else if (value.startsWith("\"")) {
+            return null;
+        }
+        if (value.startsWith("\"")) {
             value = value.substring(1);
-        } else if (value.endsWith("\"")) {
+        }
+        if (value.endsWith("\"")) {
             value = value.substring(0, value.length() - 1);
         }
         return value;
